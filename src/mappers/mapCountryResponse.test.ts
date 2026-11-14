@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { CountryResponse } from '../models/country.js';
 import { mapCountryResponse } from './mapCountryResponse.js';
 
-// Fixture follows https://countries.dev/docs; tests never access the network.
 const countryFixture = {
   name: 'United States of America',
   alpha2Code: 'US',
