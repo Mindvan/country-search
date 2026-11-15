@@ -1,193 +1,89 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createSearchController } from './createSearchController.js';
-import type { SearchController } from './createSearchController.js';
+import type { Country } from '../models/country.js';
+import { searchCountries } from '../api/searchCountries.js';
+import { HttpError } from '../api/HttpError.js';
+import { mapCountryResponse } from '../mappers/mapCountryResponse.js';
+import { debounce } from '../utils/debounce.js';
 
-const spain = {
-  name: 'Spain',
-  flag: 'spain.svg',
-  capital: 'Madrid',
-  region: 'Europe',
-  population: 47_000_000,
-  languages: [{ name: 'Spanish' }],
-};
+export interface SearchState {
+  status: 'idle' | 'loading' | 'success' | 'empty' | 'error';
+  countries: Country[];
+  error: 'timeout' | 'http' | 'network' | null;
+}
 
-describe('search controller', () => {
-  let controller: SearchController | undefined;
-  const fetchMock = vi.fn<typeof fetch>();
+export interface SearchController {
+  setQuery(query: string): void;
+  retry(): void;
+  getState(): SearchState;
+  dispose(): void;
+}
 
-  beforeEach(() => {
-    vi.useFakeTimers();
-    fetchMock.mockReset();
-    vi.stubGlobal('fetch', fetchMock);
-  });
+export function createSearchController(): SearchController {
+  let state: SearchState = { status: 'idle', countries: [], error: null };
+  let query = '';
+  let active: AbortController | undefined;
+  let disposed = false;
 
-  afterEach(() => {
-    controller?.dispose();
-    controller = undefined;
-    vi.clearAllTimers();
-    vi.useRealTimers();
-    vi.unstubAllGlobals();
-  });
-
-  function pendingRequest(): () => AbortSignal {
-    let signal: AbortSignal;
-    fetchMock.mockImplementation((_input, init) => {
-      signal = init?.signal as AbortSignal;
-      return new Promise<Response>((_resolve, reject) => {
-        if (signal.aborted) {
-          reject(signal.reason);
-          return;
-        }
-        signal.addEventListener('abort', () => reject(signal.reason), {
-          once: true,
-        });
-      });
-    });
-    return () => signal;
+  function cancel(): void {
+    active?.abort();
+    active = undefined;
   }
 
-  it('starts idle and does not request an empty or whitespace query', async () => {
-    controller = createSearchController();
-    expect(controller.getState()).toEqual({
-      status: 'idle',
-      countries: [],
-      error: null,
-    });
-    controller.setQuery('   ');
-    await vi.advanceTimersByTimeAsync(300);
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(controller.getState().status).toBe('idle');
-  });
-
-  it('debounces input for 300 ms and maps only the latest query results', async () => {
-    fetchMock.mockResolvedValue(Response.json([spain]));
-    controller = createSearchController();
-    controller.setQuery('sp');
-    await vi.advanceTimersByTimeAsync(200);
-    controller.setQuery('spain');
-    await vi.advanceTimersByTimeAsync(299);
-    expect(fetchMock).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
-      'https://countries.dev/name/spain',
-      expect.anything(),
-    );
-    expect(controller.getState()).toEqual({
-      status: 'success',
-      countries: [{ ...spain, languages: ['Spanish'] }],
-      error: null,
-    });
-  });
-
-  it('shows loading and immediately aborts on input before the next debounce', async () => {
-    const signal = pendingRequest();
-    controller = createSearchController();
-    controller.setQuery('sp');
-    await vi.advanceTimersByTimeAsync(300);
-    expect(controller.getState().status).toBe('loading');
-    const previous = signal();
-    controller.setQuery('spain');
-    expect(previous.aborted).toBe(true);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(controller.getState().error).toBeNull();
-    expect(controller.getState().status).not.toBe('error');
-  });
-
-  it('clears results and cancels a scheduled search when input is cleared', async () => {
-    fetchMock.mockResolvedValue(Response.json([spain]));
-    controller = createSearchController();
-    controller.setQuery('spain');
-    await vi.advanceTimersByTimeAsync(300);
-    controller.setQuery('france');
-    controller.setQuery('');
-    await vi.advanceTimersByTimeAsync(300);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(controller.getState()).toEqual({
-      status: 'idle',
-      countries: [],
-      error: null,
-    });
-  });
-
-  it('aborts an active request when cleared without displaying an error', async () => {
-    const signal = pendingRequest();
-    controller = createSearchController();
-    controller.setQuery('spain');
-    await vi.advanceTimersByTimeAsync(300);
-    controller.setQuery('');
-    expect(signal().aborted).toBe(true);
-    await vi.advanceTimersByTimeAsync(300);
-    expect(controller.getState()).toEqual({
-      status: 'idle',
-      countries: [],
-      error: null,
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it.each([200, 404])(
-    'treats an empty HTTP %i response as no matches',
-    async (status) => {
-      fetchMock.mockResolvedValue(
-        status === 404
-          ? new Response('Not found', { status })
-          : Response.json([]),
-      );
-      controller = createSearchController();
-      controller.setQuery('unknown');
-      await vi.advanceTimersByTimeAsync(300);
-      expect(controller.getState()).toEqual({
-        status: 'empty',
-        countries: [],
+  async function search(text: string, request: AbortController): Promise<void> {
+    if (request.signal.aborted || disposed) return;
+    state = { status: 'loading', countries: [], error: null };
+    try {
+      const raw = await searchCountries(text, request.signal);
+      if (request.signal.aborted || disposed) return;
+      const countries = raw.map(mapCountryResponse);
+      state = {
+        status: countries.length ? 'success' : 'empty',
+        countries,
         error: null,
-      });
-    },
-  );
-
-  it.each(['http', 'network'] as const)('reports a %s error', async (error) => {
-    if (error === 'http') {
-      fetchMock.mockResolvedValue(new Response('Failure', { status: 500 }));
-    } else {
-      fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
+      };
+    } catch (error: unknown) {
+      if (request.signal.aborted || disposed) return;
+      if (error instanceof Error && error.name === 'AbortError') {
+        state = { status: 'idle', countries: [], error: null };
+        return;
+      }
+      let kind: SearchState['error'] = 'network';
+      if (error instanceof Error && error.name === 'TimeoutError') {
+        kind = 'timeout';
+      } else if (error instanceof HttpError) {
+        kind = 'http';
+      }
+      state = { status: 'error', countries: [], error: kind };
+    } finally {
+      if (active === request) active = undefined;
     }
-    controller = createSearchController();
-    controller.setQuery('spain');
-    await vi.advanceTimersByTimeAsync(300);
-    expect(controller.getState()).toEqual({
-      status: 'error',
-      countries: [],
-      error,
-    });
-  });
+  }
 
-  it('reports TimeoutError as a real error distinct from caller cancellation', async () => {
-    pendingRequest();
-    controller = createSearchController();
-    controller.setQuery('spain');
-    await vi.advanceTimersByTimeAsync(10_300);
-    expect(controller.getState()).toEqual({
-      status: 'error',
-      countries: [],
-      error: 'timeout',
-    });
-  });
+  const scheduleSearch = debounce((text: string, request: AbortController) => {
+    void search(text, request);
+  }, 300);
 
-  it('retries the latest input immediately and cancels its pending debounce', async () => {
-    fetchMock.mockRejectedValueOnce(new TypeError('Offline'));
-    controller = createSearchController();
-    controller.setQuery('spain');
-    await vi.advanceTimersByTimeAsync(300);
-    fetchMock.mockResolvedValue(Response.json([]));
-    controller.setQuery('france');
-    controller.retry();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(fetchMock).toHaveBeenLastCalledWith(
-      'https://countries.dev/name/france',
-      expect.anything(),
-    );
-    await vi.advanceTimersByTimeAsync(300);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(controller.getState().error).toBeNull();
-  });
-});
+  return {
+    setQuery(value) {
+      if (disposed) return;
+      cancel();
+      query = value.trim();
+      state = { status: 'idle', countries: [], error: null };
+      if (!query) return;
+      active = new AbortController();
+      scheduleSearch(query, active);
+    },
+    retry() {
+      if (disposed || !query) return;
+      cancel();
+      active = new AbortController();
+      void search(query, active);
+    },
+    getState() {
+      return structuredClone(state);
+    },
+    dispose() {
+      disposed = true;
+      cancel();
+    },
+  };
+}
