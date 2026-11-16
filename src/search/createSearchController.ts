@@ -14,6 +14,7 @@ export interface SearchController {
   setQuery(query: string): void;
   retry(): void;
   getState(): SearchState;
+  subscribe(listener: (state: SearchState) => void): () => void;
   dispose(): void;
 }
 
@@ -23,6 +24,15 @@ export function createSearchController(): SearchController {
   let active: AbortController | undefined;
   let disposed = false;
 
+  const listeners = new Set<(state: SearchState) => void>();
+
+  function publish(next: SearchState): void {
+    state = next;
+    for (const listener of listeners) {
+      listener(structuredClone(state));
+    }
+  }
+
   function cancel(): void {
     active?.abort();
     active = undefined;
@@ -30,20 +40,20 @@ export function createSearchController(): SearchController {
 
   async function search(text: string, request: AbortController): Promise<void> {
     if (request.signal.aborted || disposed) return;
-    state = { status: 'loading', countries: [], error: null };
+    publish({ status: 'loading', countries: [], error: null });
     try {
       const raw = await searchCountries(text, request.signal);
       if (request.signal.aborted || disposed) return;
       const countries = raw.map(mapCountryResponse);
-      state = {
+      publish({
         status: countries.length ? 'success' : 'empty',
         countries,
         error: null,
-      };
+      });
     } catch (error: unknown) {
       if (request.signal.aborted || disposed) return;
       if (error instanceof Error && error.name === 'AbortError') {
-        state = { status: 'idle', countries: [], error: null };
+        publish({ status: 'idle', countries: [], error: null });
         return;
       }
       let kind: SearchState['error'] = 'network';
@@ -52,7 +62,7 @@ export function createSearchController(): SearchController {
       } else if (error instanceof HttpError) {
         kind = 'http';
       }
-      state = { status: 'error', countries: [], error: kind };
+      publish({ status: 'error', countries: [], error: kind });
     } finally {
       if (active === request) active = undefined;
     }
@@ -67,7 +77,7 @@ export function createSearchController(): SearchController {
       if (disposed) return;
       cancel();
       query = value.trim();
-      state = { status: 'idle', countries: [], error: null };
+      publish({ status: 'idle', countries: [], error: null });
       if (!query) return;
       active = new AbortController();
       scheduleSearch(query, active);
@@ -81,8 +91,17 @@ export function createSearchController(): SearchController {
     getState() {
       return structuredClone(state);
     },
+    subscribe(listener) {
+      if (disposed) return () => {};
+      listeners.add(listener);
+      listener(structuredClone(state));
+      return () => {
+        listeners.delete(listener);
+      };
+    },
     dispose() {
       disposed = true;
+      listeners.clear();
       cancel();
     },
   };
