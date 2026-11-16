@@ -33,7 +33,7 @@ export function mountCountrySearch(root: HTMLElement): () => void {
   const hero = element('section', 'hero');
   hero.append(
     element('p', 'eyebrow', 'SEARCHERS'),
-    element('h1', '', 'Where would you like to be?'),
+    element('h1', '', 'Where shall we explore?'),
     element('p', 'intro', 'Find a country and discover its info'),
   );
   const label = element('label', 'search-label', 'Country name');
@@ -84,6 +84,7 @@ export function mountCountrySearch(root: HTMLElement): () => void {
   });
 
   function showDetails(country: Country): void {
+    console.log(country);
     const title = element('h2', '', country.name);
     title.id = 'detail-title';
     const description = `${country.name}. Region: ${country.region || missing}. ${country.capital ? `Capital — ${country.capital}. ` : ''}Population — ${number.format(country.population)} people.`;
@@ -148,6 +149,32 @@ export function mountCountrySearch(root: HTMLElement): () => void {
       card.type = 'button';
       card.setAttribute('aria-label', `View details for ${country.name}`);
       const content = element('div', 'card-content');
+      if (country.flag) {
+        const flag = element('img', 'flag');
+        const emojiCode = /^[\u{1F1E6}-\u{1F1FF}]{2}$/u.test(country.flag)
+          ? Array.from(country.flag, (letter) =>
+              String.fromCharCode(letter.codePointAt(0)! - 0x1f1e6 + 97),
+            ).join('')
+          : null;
+        flag.src = emojiCode
+          ? `https://flagcdn.com/${emojiCode}.svg`
+          : country.flag;
+        flag.alt = `Flag of ${country.name}`;
+        flag.loading = 'lazy';
+        const countryCode = /\/flags\/([a-z]{2})\.svg(?:\?.*)?$/i.exec(
+          country.flag,
+        )?.[1];
+        let fallbackUsed = false;
+        flag.addEventListener('error', () => {
+          if (countryCode && !fallbackUsed) {
+            fallbackUsed = true;
+            flag.src = `https://flagcdn.com/${countryCode.toLowerCase()}.svg`;
+            return;
+          }
+          flag.replaceWith(element('p', 'hint', 'Flag not available'));
+        });
+        content.append(flag);
+      }
       content.append(
         element('p', 'eyebrow', country.region || missing),
         element('h2', '', country.name),
@@ -166,7 +193,7 @@ export function mountCountrySearch(root: HTMLElement): () => void {
   const footer = element(
     'footer',
     '',
-    'COUNTRY APP - by Mindvan - RS School 2026 - Data taken from https://countries.dev',
+    'COUNTRY APP - RS School 2026 - Data taken from https://countries.dev',
   );
   main.append(brand, hero, status, retry, results, footer);
   root.append(main, dialog);
