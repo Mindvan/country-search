@@ -1,5 +1,5 @@
 import type { Country } from '../models/country.js';
-import { searchCountries } from '../api/searchCountries.js';
+import { createCachedSearchCountries } from '../api/cachedSearchCountries.js';
 import { HttpError } from '../api/HttpError.js';
 import { mapCountryResponse } from '../mappers/mapCountryResponse.js';
 import { debounce } from '../utils/debounce.js';
@@ -19,6 +19,7 @@ export interface SearchController {
 }
 
 export function createSearchController(): SearchController {
+  const cachedSearchCountries = createCachedSearchCountries();
   let state: SearchState = { status: 'idle', countries: [], error: null };
   let query = '';
   let active: AbortController | undefined;
@@ -42,7 +43,7 @@ export function createSearchController(): SearchController {
     if (request.signal.aborted || disposed) return;
     publish({ status: 'loading', countries: [], error: null });
     try {
-      const raw = await searchCountries(text, request.signal);
+      const raw = await cachedSearchCountries(text, request.signal);
       if (request.signal.aborted || disposed) return;
       const countries = raw.map(mapCountryResponse);
       publish({
