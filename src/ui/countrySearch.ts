@@ -1,6 +1,10 @@
 import type { Country } from '../models/country.js';
 import { createSearchController } from '../search/createSearchController.js';
 import type { SearchState } from '../search/createSearchController.js';
+import {
+  readSearchHistory,
+  saveSearchHistory,
+} from '../search/searchHistory.js';
 
 const number = new Intl.NumberFormat('en-US');
 const missing = 'Not available';
@@ -54,6 +58,31 @@ export function mountCountrySearch(root: HTMLElement): () => void {
   hint.id = 'search-hint';
   searchBox.append(input);
   hero.append(label, searchBox, hint);
+  let history = readSearchHistory();
+  const historySection = element('section');
+  historySection.setAttribute('aria-label', 'Recent searches');
+  const historyButtons = element('div', 'history');
+  historySection.append(
+    element('p', 'hint', 'Recent searches'),
+    historyButtons,
+  );
+  hero.append(historySection);
+
+  function renderHistory(): void {
+    historySection.hidden = history.length === 0;
+    historyButtons.replaceChildren();
+    for (const query of history) {
+      const button = element('button', '', query);
+      button.type = 'button';
+      button.addEventListener('click', () => {
+        input.value = query;
+        input.focus();
+        controller.setQuery(query, true);
+      });
+      historyButtons.append(button);
+    }
+  }
+  renderHistory();
   const status = element('p', 'status');
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
@@ -124,6 +153,10 @@ export function mountCountrySearch(root: HTMLElement): () => void {
   }
 
   function render(state: SearchState): void {
+    if (state.status === 'loading') {
+      history = saveSearchHistory(history, input.value);
+      renderHistory();
+    }
     if (dialog.open) dialog.close();
     results.replaceChildren();
     results.setAttribute('aria-busy', String(state.status === 'loading'));
