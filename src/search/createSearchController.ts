@@ -11,7 +11,7 @@ export interface SearchState {
 }
 
 export interface SearchController {
-  setQuery(query: string): void;
+  setQuery(query: string, immediate?: boolean): void;
   retry(): void;
   getState(): SearchState;
   subscribe(listener: (state: SearchState) => void): () => void;
@@ -74,14 +74,18 @@ export function createSearchController(): SearchController {
   }, 300);
 
   return {
-    setQuery(value) {
+    setQuery(value, immediate = false) {
       if (disposed) return;
       cancel();
       query = value.trim();
       publish({ status: 'idle', countries: [], error: null });
       if (!query) return;
       active = new AbortController();
-      scheduleSearch(query, active);
+      if (immediate) {
+        void search(query, active);
+      } else {
+        scheduleSearch(query, active);
+      }
     },
     retry() {
       if (disposed || !query) return;
